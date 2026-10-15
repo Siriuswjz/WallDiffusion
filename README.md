@@ -14,7 +14,6 @@ training artifacts must be regenerated.
 A timestep-conditioned U-Net with bottleneck attention learns a DDPM cosine-noise
 process. Defaults use auxiliary **v-prediction** (unrelated to physical wall-normal
 velocity v), 1,000 diffusion timesteps and 50 deterministic DDIM sampling steps.
-It is **not** the original Jinzun architecture or checkpoint-compatible with it.
 
 - Single-target model: noisy wall quantity, timestep, and conditions
   [u,w,mask,masked observations]. No spatial interpolation of observations.
@@ -36,110 +35,40 @@ python -m pip install -r requirements.txt
 python -m unittest discover -s tests -v
 ```
 
-## Required data (not distributed)
+## Data
 
-The loader currently expects the original cached **224 train / 48 validation /
-50 test case split**, 28 patches per case, full shape (1400,800), patch size 256.
-It does not generate or repartition data.
+Provide the cached TCF split (224 training, 48 validation and 50 test cases)
+under `data/cf_p/`, with raw w fields under `data/uw_fields/`. Data and
+checkpoints are not distributed.
 
-```text
-data/
-  cf_p/yplus_15_data/{train,val,test}/CASE/patch_H_W.npz
-  uw_fields/yplus_15/CASE.npy
-  uw_fields/yplus_15/metadata.json
-```
+Use `--normalization train-only` for training-set statistics. The default
+`existing` mode reproduces legacy fixed statistics that include held-out data.
 
-Repeat for heights 30,50,100. Each patch NPZ contains raw `feature` channels
-[u,v,...] and raw `target` channels [Cf,p], shaped (C,256,256). H,W in its
-filename are full-field patch origins. The separate CASE.npy is the raw
-full-field **w only**, shape (1400,800); it replaces cached feature channel 1
-before normalization. Paths must use the same orientation as the cached data.
+## Quick start
 
-For `--normalization existing`, metadata.json must provide `cases`
-(with sorted case-name lists for train,val,test), `w_mean`, `w_std`, and
-`normalization_scope`. The lightweight config modules contain only the original
-fixed u/target constants. **These historical statistics include held-out data.**
-This mode is retained for matching legacy deterministic comparisons, not strict
-independent-test claims. Recommended for a fresh independent-test protocol:
-`--normalization train-only`, which estimates all channel statistics on training
-cases only. Inference reuses checkpoint statistics. Do not mix the two protocols.
-
-## Train
-
-Check GPU availability first. Defaults: AdamW, learning rate 1e-4, batch 8,
-200 epochs, seed 42, cosine LR decay to 1e-5, validation every 5 epochs.
-Validation samples complete fields; weights are selected by validation MSE.
-
-Pressure, fixed grid (block 30 is approximately 0.12% observations):
+Train pressure reconstruction with sparse observations:
 
 ```bash
-python train_diffusion.py --target p --yplus 15 --device cuda:0 --amp \
-  --sensor-layout grid --block-size 30 --normalization train-only
+python train_diffusion.py --target p --yplus 15 --amp --block-size 30 --normalization train-only
 ```
 
-Velocity-only single pressure target:
+For velocity-only conditioning, add `--sensor-layout random --density 0`.
+Use `--target cf` for skin friction or `--target joint` with velocity-only
+conditioning to predict both quantities. Supported heights: 15, 30, 50 and 100.
+
+Predict from a single-target checkpoint:
 
 ```bash
-python train_diffusion.py --target p --yplus 15 --device cuda:0 --amp \
-  --sensor-layout random --density 0 --normalization train-only
+python predict_diffusion.py --checkpoint output/diffusion/RUN/best.pt --samples 4 --output output/predictions/RUN
 ```
 
-Joint Cf and pressure, velocity-only (change yplus for other heights):
+For joint predictions use `scripts/predict_joint_diffusion.py`. Outputs include
+sample means and pointwise sampling standard deviations. Run any entry point
+with `--help` for additional options.
 
-```bash
-python train_diffusion.py --target joint --yplus 15 --device cuda:0 --amp \
-  --sensor-layout random --density 0 --normalization train-only
-```
+## Code
 
-Training writes a timestamped directory under output/diffusion with command,
-statistics, data identities, architecture, and checkpoints. No training starts
-merely by importing this repository. The scripts/run_* helpers preserve the
-legacy existing-normalization protocol for reproduction; use the direct entry
-point above for training-only normalization.
-
-## Predict
-
-Single target on cached test cases:
-
-```bash
-python predict_diffusion.py --checkpoint output/diffusion/RUN/best.pt \
-  --split test --device cuda:0 --samples 4 --output output/predictions/pressure_RUN
-```
-
-Joint target:
-
-```bash
-python scripts/predict_joint_diffusion.py --checkpoint output/diffusion/RUN/best.pt \
-  --device cuda:0 --samples 4 --output output/predictions/joint_RUN
-```
-
-Single-target external inference requires an NPZ with same-shaped 2D arrays
-u,w,mask,observations in original dataset units. Only sensor values are used;
-no complete true wall field is required. Keep the original dataset's physical
-units and coordinate convention.
-
-```bash
-python predict_diffusion.py --checkpoint output/diffusion/RUN/best.pt \
-  --condition measurements.npz --device cuda:0 --samples 4 \
-  --output output/predictions/external_RUN
-```
-
-Predictions use full-field network inference, not patch-wise inference.
-Multiple samples yield a mean field and pointwise sampling standard deviation;
-one sample cannot estimate uncertainty. Joint evaluation records first-sample
-and ensemble-mean metrics separately. A new output directory is required for
-each scientifically distinct experiment.
-
-## Repository layout
-
-- src/diffusion/: network, diffusion process, data and observation construction.
-- train_diffusion.py / predict_diffusion.py: single/joint training and single inference.
-- scripts/predict_joint_diffusion.py: joint inference.
-- scripts/run_joint_diffusion.py: independent height jobs across available GPUs.
-- scripts/run_diffusion_trial.py: single-target training/evaluation wrapper.
-- tests/test_diffusion.py: CPU tests for algebra, masks, channels and gradients.
-
-The data adapter remains specific to the cached TCF data layout. This release
-does not include DNS export/preparation or TBL transfer pipelines. There is no
-new license grant included; choose an appropriate license with all code owners
-before representing the repository as licensed open-source software.
+- `src/diffusion/`: model, diffusion process and data loader.
+- `train_diffusion.py`, `predict_diffusion.py`: training and prediction.
+- `scripts/`: multi-GPU experiments and joint prediction.
+- `tests/`: CPU checks.
